@@ -11,6 +11,9 @@ import { eventsQuerySchema } from "@/lib/zod/schemas/analytics";
 import { COUNTRIES, capitalize } from "@dub/utils";
 import { z } from "zod";
 
+// WICHTIG für Prisma/Node-APIs: in der Node-Runtime laufen.
+export const runtime = "nodejs";
+
 type Row = ClickEvent | LeadEvent | SaleEvent;
 
 const columnNames: Record<string, string> = {
@@ -25,112 +28,131 @@ const columnNames: Record<string, string> = {
   clickId: "Click ID",
 };
 
-const columnAccessors = {
-  trigger: (r: Row) => r.click.trigger,
-  event: (r: LeadEvent | SaleEvent) => r.eventName,
+const columnAccessors: Record<
+  string,
+  (r: Row | LeadEvent | SaleEvent | ClickEvent) => any
+> = {
+  trigger: (r: Row) => (r as ClickEvent).click.trigger,
+  event: (r: LeadEvent | SaleEvent) => (r as LeadEvent | SaleEvent).eventName,
   url: (r: ClickEvent) => r.click.url,
-  link: (r: Row) => r.domain + (r.key === "_root" ? "" : `/${r.key}`),
+  link: (r: Row) => (r as any).domain + ((r as any).key === "_root" ? "" : `/${(r as any).key}`),
   country: (r: Row) =>
-    r.country ? COUNTRIES[r.country] ?? r.country : r.country,
+    (r as any).country ? COUNTRIES[(r as any).country] ?? (r as any).country : (r as any).country,
   referer: (r: ClickEvent) => r.click.referer,
   refererUrl: (r: ClickEvent) => r.click.refererUrl,
   customer: (r: LeadEvent | SaleEvent) =>
-    r.customer.name + (r.customer.email ? ` <${r.customer.email}>` : ""),
-  invoiceId: (r: SaleEvent) => r.sale.invoiceId,
-  saleAmount: (r: SaleEvent) => "$" + (r.sale.amount / 100).toFixed(2),
+    (r as any).customer.name +
+    ((r as any).customer.email ? ` <${(r as any).customer.email}>` : ""),
+  invoiceId: (r: SaleEvent) => (r as any).sale.invoiceId,
+  saleAmount: (r: SaleEvent) => "$" + ((r as any).sale.amount / 100).toFixed(2),
   clickId: (r: ClickEvent) => r.click.id,
 };
 
-// GET /api/events/export – get export data for analytics
-export const GET = withWorkspace(
-  async ({ searchParams, workspace, session }) => {
-    throwIfClicksUsageExceeded(workspace);
+// Lokales Schema: erlaubt die zusätzlichen (optionalen) Felder + columns als CSV
+const LocalQuerySchema = eventsQuerySchema
+  .extend({
+    domain: z.string().optional(),
+    key: z.string().optional(),
+    interval: z.string().optional(),
+    start: z.string().optional(),
+    end: z.string().optional(),
+    folderId: z.string().optional(),
+  })
+  .and(
+    z.object({
+      columns: z
+        .string()
+        .transform((c) => c.split(",").map((s) => s.trim()).filter(Boolean))
+        .pipe(z.string().array()),
+    })
+  );
 
-    const parsedParams = eventsQuerySchema
-      .and(
-        z.object({
-          columns: z
-            .string()
-            .transform((c) => c.split(","))
-            .pipe(z.string().array()),
-        }),
-      )
-      .parse(searchParams);
+// GET /api/events/export – get export data for analytics
+export const GET = withWorkspace(async ({ searchParams, workspace, session }) => {
+  // Nutzungs-Limits prüfen
+  throwIfClicksUsageExceeded(workspace);
 
-    const { event, domain, interval, start, end, columns, key, folderId } =
-      parsedParams;
+  // URLSearchParams -> Plain Object (wichtig für Zod)
+  const queryObject =
+    typeof searchParams?.get === "function"
+      ? Object.fromEntries(searchParams as URLSearchParams)
+      : (searchParams as any);
 
-    if (domain) {
-      await getDomainOrThrow({ workspace, domain });
-    }
+  const parsedParams = LocalQuerySchema.parse(queryObject);
 
-    const link =
-      domain && key
-        ? await getLinkOrThrow({ workspaceId: workspace.id, domain, key })
-        : null;
+  const { event, domain, interval, start, end, columns, key, folderId } =
+    parsedParams;
 
-    const folderIdToVerify = link?.folderId || folderId;
-    if (folderIdToVerify) {
-      await verifyFolderAccess({
-        workspace,
-        userId: session.user.id,
-        folderId: folderIdToVerify,
-        requiredPermission: "folders.read",
-      });
-    }
+  if (domain) {
+    await getDomainOrThrow({ workspace, domain });
+  }
 
-    validDateRangeForPlan({
-      plan: workspace.plan,
-      dataAvailableFrom: workspace.createdAt,
-      interval,
-      start,
-      end,
-      throwError: true,
+  const link =
+    domain && key
+      ? await getLinkOrThrow({ workspaceId: workspace.id, domain, key })
+      : null;
+
+  const folderIdToVerify = link?.folderId || folderId;
+  if (folderIdToVerify) {
+    await verifyFolderAccess({
+      workspace,
+      userId: session.user.id,
+      folderId: folderIdToVerify,
+      requiredPermission: "folders.read",
     });
+  }
 
-    const folderIds = folderIdToVerify
+  validDateRangeForPlan({
+    plan: workspace.plan,
+    dataAvailableFrom: workspace.createdAt,
+    interval,
+    start,
+    end,
+    throwError: true,
+  });
+
+  const folderIds =
+    folderIdToVerify
       ? undefined
       : await getFolderIdsToFilter({
           workspace,
           userId: session.user.id,
         });
 
-    const response = await getEvents({
-      ...parsedParams,
-      ...(link && { linkId: link.id }),
-      workspaceId: workspace.id,
-      limit: 100000,
-      folderIds,
-      folderId: folderId || "",
-    });
+  const response = await getEvents({
+    ...parsedParams,
+    ...(link && { linkId: link.id }),
+    workspaceId: workspace.id,
+    limit: 100000,
+    folderIds,
+    folderId: folderId || "",
+  });
 
-    const data = response.map((row) =>
-      Object.fromEntries(
-        columns.map((c) => [
-          columnNames?.[c] ?? capitalize(c),
-          columnAccessors[c]?.(row) ?? row?.[c],
-        ]),
-      ),
-    );
+  const data = response.map((row) =>
+    Object.fromEntries(
+      columns.map((c) => [
+        columnNames?.[c] ?? capitalize(c),
+        columnAccessors[c]?.(row as any) ?? (row as any)?.[c],
+      ])
+    )
+  );
 
-    const csvData = convertToCSV(data);
+  const csvData = convertToCSV(data);
 
-    return new Response(csvData, {
-      headers: {
-        "Content-Type": "application/csv",
-        "Content-Disposition": `attachment; filename=${event}_export.csv`,
-      },
-    });
-  },
-  {
-    requiredPlan: [
-      "business",
-      "business plus",
-      "business extra",
-      "business max",
-      "advanced",
-      "enterprise",
-    ],
-    requiredPermissions: ["analytics.read"],
-  },
-);
+  return new Response(csvData, {
+    headers: {
+      "Content-Type": "application/csv",
+      "Content-Disposition": `attachment; filename=${event}_export.csv`,
+    },
+  });
+}, {
+  requiredPlan: [
+    "business",
+    "business plus",
+    "business extra",
+    "business max",
+    "advanced",
+    "enterprise",
+  ],
+  requiredPermissions: ["analytics.read"],
+});
