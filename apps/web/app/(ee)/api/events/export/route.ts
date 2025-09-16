@@ -2,7 +2,7 @@ import { getEvents } from "@/lib/analytics/get-events";
 import { getFolderIdsToFilter } from "@/lib/analytics/get-folder-ids-to-filter";
 import { convertToCSV, validDateRangeForPlan } from "@/lib/analytics/utils";
 import { getDomainOrThrow } from "@/lib/api/domains/get-domain-or-throw";
-import { getLinkOrThrow } from "@/lib/api/links/get-link-or-throw";export const runtime = "nodejs";
+import { getLinkOrThrow } from "@/lib/api/links/get-link-or-throw";
 import { throwIfClicksUsageExceeded } from "@/lib/api/links/usage-checks";
 import { withWorkspace } from "@/lib/auth";
 import { verifyFolderAccess } from "@/lib/folder/permissions";
@@ -10,7 +10,6 @@ import { ClickEvent, LeadEvent, SaleEvent } from "@/lib/types";
 import { eventsQuerySchema } from "@/lib/zod/schemas/analytics";
 import { COUNTRIES, capitalize } from "@dub/utils";
 import { z } from "zod";
-export const runtime = "nodejs";
 
 // Wichtig: diese Route muss in der Node-Runtime laufen (nicht Edge)
 export const runtime = "nodejs";
@@ -37,7 +36,8 @@ const columnAccessors: Record<string, (r: any) => any> = {
   country: (r: any) => (r.country ? COUNTRIES[r.country] ?? r.country : r.country),
   referer: (r: ClickEvent) => r.click.referer,
   refererUrl: (r: ClickEvent) => r.click.refererUrl,
-  customer: (r: any) => r.customer?.name + (r.customer?.email ? ` <${r.customer.email}>` : ""),
+  customer: (r: any) =>
+    r.customer?.name + (r.customer?.email ? ` <${r.customer.email}>` : ""),
   invoiceId: (r: any) => r.sale?.invoiceId,
   saleAmount: (r: any) => "$" + ((r.sale?.amount ?? 0) / 100).toFixed(2),
   clickId: (r: ClickEvent) => r.click.id,
@@ -57,7 +57,12 @@ const LocalQuerySchema = eventsQuerySchema
     z.object({
       columns: z
         .string()
-        .transform((c) => c.split(",").map((s) => s.trim()).filter(Boolean))
+        .transform((c) =>
+          c
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        )
         .pipe(z.string().array()),
     })
   );
@@ -68,7 +73,7 @@ export const GET = withWorkspace(
     // Nutzungs-Limits prüfen
     throwIfClicksUsageExceeded(workspace);
 
-    // URLSearchParams -> Plain Object (korrekt & typsicher), sonst direkt Objekt nutzen
+    // URLSearchParams -> Plain Object (korrekt & typsicher)
     let queryObject: Record<string, string>;
     if (typeof (searchParams as any)?.get === "function") {
       const usp = searchParams as unknown as URLSearchParams;
@@ -78,7 +83,8 @@ export const GET = withWorkspace(
     }
 
     const parsedParams = LocalQuerySchema.parse(queryObject);
-    const { event, domain, interval, start, end, columns, key, folderId } = parsedParams;
+    const { event, domain, interval, start, end, columns, key, folderId } =
+      parsedParams;
 
     if (domain) {
       await getDomainOrThrow({ workspace, domain });
@@ -99,24 +105,22 @@ export const GET = withWorkspace(
       });
     }
 
+    // ✅ Typ-Fix: start/end in Date konvertieren für die Validierung
+    validDateRangeForPlan({
+      plan: workspace.plan,
+      dataAvailableFrom: workspace.createdAt,
+      interval,
+      start: start ? new Date(start) : undefined,
+      end: end ? new Date(end) : undefined,
+      throwError: true,
+    });
 
-validDateRangeForPlan({
-  plan: workspace.plan,
-  dataAvailableFrom: workspace.createdAt,
-  interval,
-  start: start ? new Date(start) : undefined,  // <= Fix
-  end: end ? new Date(end) : undefined,        // <= Fix
-  throwError: true,
-});
-
-
-    const folderIds =
-      folderIdToVerify
-        ? undefined
-        : await getFolderIdsToFilter({
-            workspace,
-            userId: session.user.id,
-          });
+    const folderIds = folderIdToVerify
+      ? undefined
+      : await getFolderIdsToFilter({
+          workspace,
+          userId: session.user.id,
+        });
 
     const response = await getEvents({
       ...parsedParams,
