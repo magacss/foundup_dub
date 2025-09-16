@@ -2,7 +2,7 @@ import { getEvents } from "@/lib/analytics/get-events";
 import { getFolderIdsToFilter } from "@/lib/analytics/get-folder-ids-to-filter";
 import { convertToCSV, validDateRangeForPlan } from "@/lib/analytics/utils";
 import { getDomainOrThrow } from "@/lib/api/domains/get-domain-or-throw";
-import { getLinkOrThrow } from "@/lib/api/links/get-link-or-throw";
+import { getLinkOrThrow } from "@/lib/api/links/get-link-or-throw";export const runtime = "nodejs";
 import { throwIfClicksUsageExceeded } from "@/lib/api/links/usage-checks";
 import { withWorkspace } from "@/lib/auth";
 import { verifyFolderAccess } from "@/lib/folder/permissions";
@@ -10,6 +10,7 @@ import { ClickEvent, LeadEvent, SaleEvent } from "@/lib/types";
 import { eventsQuerySchema } from "@/lib/zod/schemas/analytics";
 import { COUNTRIES, capitalize } from "@dub/utils";
 import { z } from "zod";
+export const runtime = "nodejs";
 
 // Wichtig: diese Route muss in der Node-Runtime laufen (nicht Edge)
 export const runtime = "nodejs";
@@ -98,14 +99,16 @@ export const GET = withWorkspace(
       });
     }
 
-    validDateRangeForPlan({
-      plan: workspace.plan,
-      dataAvailableFrom: workspace.createdAt,
-      interval,
-      start,
-      end,
-      throwError: true,
-    });
+
+validDateRangeForPlan({
+  plan: workspace.plan,
+  dataAvailableFrom: workspace.createdAt,
+  interval,
+  start: start ? new Date(start) : undefined,  // <= Fix
+  end: end ? new Date(end) : undefined,        // <= Fix
+  throwError: true,
+});
+
 
     const folderIds =
       folderIdToVerify
